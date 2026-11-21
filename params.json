@@ -1,1 +1,1 @@
-{"low_hp": 0.37, "high_hp": 0.87, "band_min": 25, "band_max": 80, "fire_range": 151.63, "loot_r": 83.23, "goal_frac": 0.3, "farm_until": 179.55, "farm": 0, "dodge": 1}
+{"farm": 1, "dodge": 1, "band_min": 25, "band_max": 80, "predict": 1, "predict_k": 0.5}
