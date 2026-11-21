@@ -23,7 +23,14 @@ P = {
     "plating": 0.0,      # prefer +HP plating over armor
     "endgame": 0.0,
     "farm": 0.0,         # shoot crates / NPC drones for cubes when no mech is around (until farm_until s)
-    "farm_until": 330.0,      # after the last shrink starts, sit exactly on the zone centre
+    "farm_until": 330.0,
+    "predict": 0.0,      # ML-lite: online acceleration estimate for target lead
+    "predict_k": 0.5,
+    "ml": 0.0,           # learned engage/retreat model (ml_model.json)
+    "ml_thr": 0.5,
+    "multi_flee": 0.0,   # retreat when >=2 enemies are close and hp < 85%
+    "reload_cover": 0.0, # retreat to cover to reload when ammo is low and threatened
+    "late_hold": 0.0,    # in the last rings, hold still in the centre unless an enemy is close      # after the last shrink starts, sit exactly on the zone centre
 }
 try:  # experiment overrides
     P.update(json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "params.json"))))
@@ -141,6 +148,13 @@ class Bot:
         self.unstick_until = -1.0
         self.unstick_dir = 1
         self.reach = c["loot"]["pickup_radius"]
+        self.hist = {}
+        self.model = None
+        self.last_feat = None
+        try:
+            self.model = json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "ml_model.json")))
+        except Exception:
+            pass
 
     # ---------- helpers ----------
     def upgrade_pick(self, offer):
@@ -175,9 +189,13 @@ class Bot:
             vz = 0.0
         size = 1.0 + 0.05 * tgt.get("cubes", 0)
         th = 4.5 * size
+        ax = ay = 0.0
+        if P["predict"] and tgt.get("id") in self.hist:
+            ax, ay = self.hist[tgt["id"]][2]
         t = 0.0
         for _ in range(3):
-            px, py, pz = tx + vx * t, ty + vy * t, tz + th + vz * t
+            tc = min(t, 0.7)
+            px, py, pz = tx + vx * t + 0.5 * ax * tc * tc, ty + vy * t + 0.5 * ay * tc * tc, tz + th + vz * t
             d = math.dist((px, py, pz), (mx, my, mz + mh))
             t = d / speed
         dxy = math.hypot(px - mx, py - my)
@@ -238,14 +256,55 @@ class Bot:
             self.threats[m["id"]] = (tuple(m["pos"]), t)
         for k in [k for k, v in self.threats.items() if t - v[1] > 8.0]:
             del self.threats[k]
+        for m in mechs:
+            h = self.hist.get(m["id"])
+            if h is not None and t > h[0]:
+                dt = t - h[0]
+                a = ((m["vel"][0] - h[1][0]) / dt, (m["vel"][1] - h[1][1]) / dt)
+                a = (max(-25.0, min(25.0, a[0])), max(-25.0, min(25.0, a[1])))
+                pa = h[2]
+                k = P["predict_k"]
+                self.hist[m["id"]] = (t, (m["vel"][0], m["vel"][1]), (pa[0] * (1 - k) + a[0] * k, pa[1] * (1 - k) + a[1] * k))
+            elif h is None:
+                self.hist[m["id"]] = (t, (m["vel"][0], m["vel"][1]), (0.0, 0.0))
         threat_pos = [v[0] for v in self.threats.values()]
         threatened = bool(threat_pos) and (t - self.last_hit_t < 6.0 or any(math.dist(p[:2], (x, y)) < 120 for p in threat_pos))
 
+        # features for the learned engage/retreat model
+        near = [p for p in threat_pos if math.dist(p[:2], (x, y)) < 150]
+        nd = min([math.dist(p[:2], (x, y)) for p in threat_pos] or [250.0])
+        rear = 0.0
+        if threat_pos:
+            tp0 = min(threat_pos, key=lambda p: math.dist(p[:2], (x, y)))
+            rear = 1.0 if abs(ang_diff(math.atan2(tp0[1] - y, tp0[0] - x), me["aim"][0])) > math.pi / 2 else 0.0
+        g0 = me["weapons"][0]
+        evis = [m for m in mechs]
+        ehp = (min(m.get("hp", 1400) / max(m.get("max_hp", 1400), 1) for m in evis) if evis else 1.0)
+        self.last_feat = [hpf, min(len(near), 4) / 4.0, min(nd, 250.0) / 250.0, (g0.get("ammo", 12) if g0 else 0) / 12.0,
+                          min(me["cubes"], 10) / 10.0, 1.0 if self.safe_point(obs, x, y) else 0.0, t / 480.0, rear,
+                          1.0 if t - self.last_hit_t < 2.0 else 0.0, ehp, 1.0]
+        ml_danger = False
+        if P["ml"] and self.model and threatened:
+            try:
+                zz = sum(w * f for w, f in zip(self.model["w"], self.last_feat))
+                ml_danger = 1.0 / (1.0 + math.exp(-max(-30.0, min(30.0, zz)))) > P["ml_thr"]
+            except Exception:
+                pass
+
         # mode switching
-        if self.mode == "fight" and hpf < P["low_hp"] and threatened:
+        if P["ml"] and self.model:
+            if self.mode == "fight" and ml_danger:
+                self.mode = "retreat"; self.cover_t = -99
+        elif self.mode == "fight" and hpf < P["low_hp"] and threatened:
             self.mode = "retreat"; self.cover_t = -99
         elif self.mode == "retreat" and (hpf >= P["high_hp"] or not threat_pos):
             self.mode = "fight"
+        if P["multi_flee"] and self.mode == "fight" and hpf < 0.85:
+            if sum(1 for p in threat_pos if math.dist(p[:2], (x, y)) < 150) >= 2:
+                self.mode = "retreat"; self.cover_t = -99
+        _g = me["weapons"][0]
+        if P["reload_cover"] and self.mode == "fight" and threatened and _g and _g.get("ammo", 12) <= 3:
+            self.mode = "retreat"; self.cover_t = -99
 
         slots = me["weapons"]
         gun = slots[0] if slots[0] and slots[0]["kind"] == "gun" else None
@@ -314,6 +373,9 @@ class Bot:
                 ax, ay = x - tp[0], y - tp[1]
                 n = math.hypot(ax, ay) or 1
                 want = (x + ax / n * 30 + (gx - x) * 0.1, y + ay / n * 30 + (gy - y) * 0.1)
+        elif P["late_hold"] and zone.get("next_radius", 99) <= 80 and (target is None or tdist > 70):
+            want = (gx, gy) if d_goal > max(nr * 0.5, 4.0) else None
+            label = "hold"
         elif target is not None:
             # fight: hold the distance band and strafe
             ux, uy = math.cos(tyaw), math.sin(tyaw)
@@ -471,6 +533,8 @@ class Bot:
             if gun and gun.get("ammo", 99) < gun.get("stats", {}).get("mag", 12) and gun.get("reload", 0) <= 0:
                 act["reload"] = True
         if gun and gun.get("ammo", 1) <= 0 and gun.get("reload", 0) <= 0:
+            act["reload"] = True
+        if self.mode == "retreat" and gun and gun.get("ammo", 12) < gun.get("stats", {}).get("mag", 12) and gun.get("reload", 0) <= 0 and (target is None or tdist > 60):
             act["reload"] = True
         act["fire"] = fire
 
