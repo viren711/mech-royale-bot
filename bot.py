@@ -18,6 +18,12 @@ P = {
     "loot_r": 70.0,      # detour radius for cubes / pickups when safe
     "goal_frac": 0.5,    # stay within this fraction of next zone radius
     "drops": 1.0,        # contest supply drops (1) or not (0)
+    "dodge": 0.0,        # sidestep incoming bullets / charging lasers
+    "stick": 0.0,        # keep the same target until it dies or is lost
+    "plating": 0.0,      # prefer +HP plating over armor
+    "endgame": 0.0,
+    "farm": 0.0,         # shoot crates / NPC drones for cubes when no mech is around (until farm_until s)
+    "farm_until": 330.0,      # after the last shrink starts, sit exactly on the zone centre
 }
 try:  # experiment overrides
     P.update(json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "params.json"))))
@@ -138,10 +144,11 @@ class Bot:
 
     # ---------- helpers ----------
     def upgrade_pick(self, offer):
+        pref = (["plating", "armor"] + UPG_PREF[2:]) if P["plating"] else UPG_PREF
         best, rank = 0, 999
         for i, ch in enumerate(offer.get("choices", [])):
             cid = ch.get("id", "")
-            r = UPG_PREF.index(cid) if cid in UPG_PREF else 500
+            r = pref.index(cid) if cid in pref else 500
             if r < rank:
                 best, rank = i, r
         return best
@@ -253,10 +260,35 @@ class Bot:
                 continue
             vis = self.los(me, (m["pos"][0], m["pos"][1], m["pos"][2] + 4.5))
             score = dxy + (m.get("hp", 1400) / 15.0) + (0 if vis else 400)
+            if P["stick"] and m["id"] == getattr(self, "last_target", None) and vis:
+                score -= 150
             if best is None or score < best[0]:
                 best = (score, m, yaw, pitch, dxy, vis)
         if best:
             _, target, tyaw, tpitch, tdist, tvis = best
+        farm = None
+        if (target is None and P["farm"] and t < P["farm_until"] and hpf > 0.6
+                and not (self.mode == "retreat")):
+            cands = [(m, 1.75) for m in obs.get("mechs", []) if m["kind"] == "npc"] + \
+                    [(c, 0.8) for c in obs.get("crates", [])]
+            fb = None
+            for o, hh in cands:
+                ox, oy, oz = o["pos"]
+                d = math.hypot(ox - x, oy - y)
+                if d > 140 or not self.safe_point(obs, ox, oy):
+                    continue
+                if not self.los(me, (ox, oy, oz + hh)):
+                    continue
+                if fb is None or d < fb[0]:
+                    fb = (d, o, hh)
+            if fb:
+                d, o, hh = fb
+                fake = {"pos": o["pos"], "vel": o.get("vel", [0, 0, 0]), "cubes": 0}
+                yaw, pitch, dxy, _ = self.aim_at(me, fake, gspeed)
+                # aim_at targets +4.5 m; correct pitch for the object's centre height
+                mh = me["stats"].get("muzzle_height", 7.0)
+                pitch = math.atan2(o["pos"][2] + hh - (z + mh), max(dxy, 0.1))
+                farm = (o, yaw, pitch, dxy)
 
         # ----- movement goal -----
         (gx, gy), nr = self.zone_goal(obs)
@@ -297,6 +329,8 @@ class Bot:
             if not self.safe_point(obs, nx_, ny_):
                 mvx += (gx - x) / max(d_goal, 1) * 1.5; mvy += (gy - y) / max(d_goal, 1) * 1.5
             move = [mvx, mvy]
+        elif farm is not None and farm[3] > 35:
+            want = (farm[0]["pos"][0], farm[0]["pos"][1]); label = "farm"
         else:
             # no visible enemy: loot, drops, or go to the zone goal
             best_l = None
@@ -328,6 +362,38 @@ class Bot:
                 pass  # hold still (silent) and regen
         if want is not None:
             move = [want[0] - x, want[1] - y]
+
+        if target is not None:
+            self.last_target = target["id"]
+
+        # ----- dodge incoming fire -----
+        if P["dodge"] and not urgent:
+            mh = me["stats"].get("height", 9.0)
+            for pr in obs.get("projectiles", []):
+                px, py, pz = pr["pos"]; vx, vy, vz = pr["vel"]
+                v2 = vx * vx + vy * vy
+                if v2 < 1:
+                    continue
+                tc = ((x - px) * vx + (y - py) * vy) / v2
+                if 0 < tc < 0.8:
+                    cx_, cy_ = px + vx * tc - x, py + vy * tc - y
+                    if math.hypot(cx_, cy_) < 4.0:
+                        sgn = 1 if (cx_ * -vy + cy_ * vx) < 0 else -1
+                        sp = math.sqrt(v2)
+                        move = [move[0] * 0.3 + sgn * -vy / sp, move[1] * 0.3 + sgn * vx / sp]
+                        break
+            for m in mechs:
+                if m.get("charging"):
+                    ay = math.atan2(y - m["pos"][1], x - m["pos"][0])
+                    if abs(ang_diff(m["aim"][0], ay)) < 0.08:
+                        move = [move[0] * 0.3 - math.sin(ay) * self.strafe, move[1] * 0.3 + math.cos(ay) * self.strafe]
+                        act["jump"] = True
+                        break
+
+        # ----- end game: sit on the final centre -----
+        if P["endgame"] and zone.get("next_radius", 99) <= 0.5 and t > zone["shrink_start"] - 10:
+            dd = math.hypot(gx - x, gy - y)
+            move = [gx - x, gy - y] if dd > 1.0 else [0.0, 0.0]
 
         # ----- take weapons in reach -----
         for p in obs.get("pickups", []):
@@ -379,6 +445,15 @@ class Bot:
                                 aim = [myaw, th]
                                 if abs(ang_diff(myaw, cur_yaw)) < 0.04 and abs(th - cur_pitch) < 0.05:
                                     fire[1] = True
+        elif farm is not None:
+            o, fyaw, fpitch, fd = farm
+            aim = [fyaw, fpitch]
+            tol = math.atan2(1.2, max(fd, 1)) + 0.004
+            if gun and abs(ang_diff(fyaw, cur_yaw)) < tol and abs(fpitch - cur_pitch) < tol * 1.5 and gun.get("ammo", 1) > 0:
+                fire[0] = True
+            s1 = slots[1]
+            if s1 and s1["kind"] == "lightning" and fd < 40 and abs(ang_diff(fyaw, cur_yaw)) < 0.2 and me["energy"] > 30:
+                fire[1] = True
         else:
             # face the most recent threat to protect the rear, else look where we walk
             if threat_pos:
