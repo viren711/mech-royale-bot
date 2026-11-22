@@ -69,6 +69,19 @@ class Combat:
         dx, dy, dz = [point[i] - origin[i] for i in range(3)]
         return [math.atan2(dy, dx), math.atan2(dz, math.hypot(dx, dy))], origin, point
 
+    def is_hostile(self, m, pos, now):
+        # Fight only mechs that are after us: hit us recently, aim at us, charging a laser, close, or closing in fast.
+        if now - getattr(self, 'attackers', {}).get(m['id'], -99) < 10:
+            return True
+        dx, dy = pos[0] - m['pos'][0], pos[1] - m['pos'][1]
+        d = math.hypot(dx, dy)
+        if d < 50 or m.get('charging'):
+            return True
+        diff = (m['aim'][0] - math.atan2(dy, dx) + math.pi) % (2 * math.pi) - math.pi
+        if d < 230 and abs(diff) < .28:
+            return True
+        return d < 170 and (m['vel'][0] * dx + m['vel'][1] * dy) / max(d, 1) > 4
+
     def laser_should_release(self, me, target, weapon):
         stats = weapon['stats']
         charge = weapon.get('charge', 0)
@@ -99,7 +112,11 @@ class Combat:
         pos, stats = me['pos'], me['stats']
         x, y, z = pos
         hp = me['hp'] / me['max_hp']
+        if not hasattr(self, 'attackers'):
+            self.attackers = {}
         for event in obs['events']:
+            if event['type'] == 'damaged' and event.get('by') is not None:
+                self.attackers[event['by']] = now
             if event['type'] == 'damaged' and event.get('bearing') is not None:
                 self.last_threat = (now, event['bearing'])
         weapons = me['weapons']
@@ -137,7 +154,7 @@ class Combat:
             if p['kind'] in by_kind or abs(p['pos'][2] - z) > 4:
                 continue
             distance = math.dist(pos, p['pos'])
-            wanted = any(w is None for w in weapons)
+            wanted = any(w is None for w in weapons) and p['kind'] != 'mortar'
             replace = None
             if not wanted and 'mortar' in by_kind and p['kind'] in ('laser', 'lightning'):
                 wanted, replace = True, by_kind['mortar'][0]
@@ -155,6 +172,8 @@ class Combat:
         for m in obs['mechs']:
             distance = math.dist(pos, m['pos'])
             if m['kind'] == 'npc' and (nearest < 90 or distance > 65):
+                continue
+            if m['kind'] == 'mech' and not self.is_hostile(m, pos, now):
                 continue
             top = m['pos'][2] + (4.5 * (1 + .05 * m.get('cubes', 0)) if m['kind'] == 'mech' else 1.75)
             if not self.arena.clear_shot(origin, [*m['pos'][:2], top]):
