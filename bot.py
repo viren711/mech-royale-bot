@@ -28,6 +28,10 @@ P = {
     "predict_k": 0.5,
     "ml": 0.0,           # learned engage/retreat model (ml_model.json)
     "ml_thr": 0.5,
+    "wpn": 1.0,          # pick up secondary weapons at all
+    "wpn_r": 0.0,        # detour radius for weapon pickups (0 = loot_r)
+    "no_mortar": 0.0, "no_laser": 0.0, "no_lightning": 0.0,
+    "hunt": 0.0,         # walk toward a remembered enemy when healthy and nothing else to do
     "multi_flee": 0.0,   # retreat when >=2 enemies are close and hp < 85%
     "reload_cover": 0.0, # retreat to cover to reload when ammo is low and threatened
     "late_hold": 0.0,    # in the last rings, hold still in the centre unless an enemy is close      # after the last shrink starts, sit exactly on the zone centre
@@ -166,6 +170,9 @@ class Bot:
             if r < rank:
                 best, rank = i, r
         return best
+
+    def want_kind(self, kind):
+        return bool(P["wpn"]) and not P.get("no_" + kind, 0)
 
     def zone_goal(self, obs):
         z = obs["zone"]
@@ -404,10 +411,10 @@ class Bot:
                             best_l = (dd, c["pos"])
                 empty = slots[1] is None
                 for p in obs.get("pickups", []):
-                    if p["kind"] == "gun" or not empty:
+                    if p["kind"] == "gun" or not empty or not self.want_kind(p["kind"]):
                         continue
                     dd = math.dist(p["pos"][:2], (x, y))
-                    if dd < P["loot_r"] and abs(p["pos"][2] - z) < 6 and self.safe_point(obs, p["pos"][0], p["pos"][1]):
+                    if dd < (P["wpn_r"] or P["loot_r"]) and abs(p["pos"][2] - z) < 6 and self.safe_point(obs, p["pos"][0], p["pos"][1]):
                         if best_l is None or dd - 20 < best_l[0]:
                             best_l = (dd - 20, p["pos"])
                 if P["drops"] > 0:
@@ -418,6 +425,10 @@ class Bot:
                                 best_l = (dd - 60, dr["pos"])
             if best_l:
                 want = (best_l[1][0], best_l[1][1]); label = "loot"
+            elif P["hunt"] and hpf > 0.75 and threat_pos and not urgent and \
+                    min(math.dist(p[:2], (x, y)) for p in threat_pos) < 160:
+                tp = min(threat_pos, key=lambda p: math.dist(p[:2], (x, y)))
+                want = (tp[0], tp[1]); label = "hunt"
             elif d_goal > max(nr * P["goal_frac"], 3.0):
                 want = (gx, gy)
             elif self.mode == "fight" and hpf < 0.99 and threatened:
@@ -459,7 +470,7 @@ class Bot:
 
         # ----- take weapons in reach -----
         for p in obs.get("pickups", []):
-            if p["kind"] == "gun":
+            if p["kind"] == "gun" or not self.want_kind(p["kind"]):
                 continue
             if math.dist(p["pos"][:2], (x, y)) <= self.reach and abs(p["pos"][2] - z) < 4:
                 if slots[1] is None:
