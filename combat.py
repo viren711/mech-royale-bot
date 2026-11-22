@@ -190,7 +190,7 @@ class Combat:
             goal = list(zone['next_center'])
         # Don't abandon an early duel just because a shrinking phase has begun.
         if not urgent and zone['next_radius'] > 30:
-            if pickup_candidates and min(pickup_candidates, key=lambda pair: pair[0])[0] < 80 and nearest > 35:
+            if pickup_candidates and min(pickup_candidates, key=lambda pair: pair[0])[0] < 110 and nearest > 35:
                 goal = min(pickup_candidates, key=lambda pair: pair[0])[1]['pos'][:2]
                 seeking_loot = True
             elif known_cubes and nearest > 40 and me['cubes'] < 10:
