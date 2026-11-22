@@ -244,7 +244,7 @@ class Combat:
         if target and target['kind'] == 'mech' and not urgent and not seeking_loot and not seeking_cover and zone['next_radius'] > 20:
             ex, ey = unit(target['pos'][0] - x, target['pos'][1] - y)
             distance = math.dist(pos, target['pos'])
-            preferred = (60 if self.arc_resting else 35) if 'lightning' in by_kind else 90 if 'laser' in by_kind else 60
+            preferred = (60 if self.arc_resting else 35) if 'lightning' in by_kind else 80 if 'laser' in by_kind else 75
             if 'lightning' in target.get('weapons', []) and 'laser' in by_kind:
                 preferred = 110
             if hp < 0.35 or close_count >= 3:
