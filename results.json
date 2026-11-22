@@ -1,0 +1,169 @@
+{
+  "date": "2026-11-22",
+  "target_score": 6.31,
+  "comparison": "strictly_greater",
+  "selected": {
+    "name": "recovery-v26",
+    "commit": "2054a5bb27fdd36c8b8f63eebddbcf145737694e",
+    "receipt": "BB-7097A598",
+    "score": 5.85
+  },
+  "runs": [
+    {
+      "name": "baseline-v1",
+      "commit": "d4b7934b5ccbc02b6f29859bb9db385f0829ec4e",
+      "receipt": "BB-C2349777",
+      "score": 1.29
+    },
+    {
+      "name": "rooftop-v2",
+      "commit": "343139453c1995c141a44b897635c0663710e70f",
+      "receipt": "BB-D8559723",
+      "score": 0.44
+    },
+    {
+      "name": "combat-v3",
+      "commit": "5dbeec64befaf446c7f43aa76fc9fa1a31630319",
+      "receipt": "BB-9D2EC473",
+      "score": 3.67
+    },
+    {
+      "name": "sustain-v4",
+      "commit": "cd85a4b0bed134e019b07006e089bf3261a55ac9",
+      "receipt": "BB-AA2FFC04",
+      "score": 3.67
+    },
+    {
+      "name": "skirmish-v6",
+      "commit": "3efe92acc5bc15778bcf94ee8ad5a78ffca52972",
+      "receipt": "BB-B3606475",
+      "score": 5.1
+    },
+    {
+      "name": "supply-v7",
+      "commit": "dd71d123ec8b9754d4570b2c3e8849d14359a068",
+      "receipt": "BB-D98A5863",
+      "score": 5.46
+    },
+    {
+      "name": "laserfix-v8",
+      "commit": "53c7150303aa26d5733e0c5aa01e1681a36ea10d",
+      "receipt": "BB-DF9C6D15",
+      "score": 5.73
+    },
+    {
+      "name": "growth-v9",
+      "commit": "32d7ffc738a4565f399599126be81003b8dca47b",
+      "receipt": "BB-AA121873",
+      "score": 5.67
+    },
+    {
+      "name": "evasion-v10",
+      "commit": "aa33e30a9dccddd7089c71547da35962bbd308d9",
+      "receipt": "BB-5D04F286",
+      "score": 5.17
+    },
+    {
+      "name": "anti-arc-v11",
+      "commit": "6513060291d2b7ff7a759830198edd51654c886b",
+      "receipt": "BB-444A6149",
+      "score": 5.71
+    },
+    {
+      "name": "armor-v12",
+      "commit": "fe4b870cd6e4955895e86023a20b2e9910d85a58",
+      "receipt": "BB-6683FFC3",
+      "score": 5.71
+    },
+    {
+      "name": "range-v13",
+      "commit": "22286fc9ecc3a7deef96042de475d740b6affc29",
+      "receipt": "BB-093E79FF",
+      "score": 5.65
+    },
+    {
+      "name": "terrain-loot-v15",
+      "commit": "ee05b406be11f21200d071bd5201e45854567bc7",
+      "receipt": "BB-0E14E4C3",
+      "score": 5.67
+    },
+    {
+      "name": "finisher-v14",
+      "commit": "e180da3acf355f2941d7768bb35419d0b104dbd5",
+      "receipt": "BB-19EDB71A",
+      "score": 5.81
+    },
+    {
+      "name": "beam-dodge-v18",
+      "commit": "a7b73a51e99bb6cfb6d9dae18f960d04165a1d1f",
+      "receipt": "BB-A61CC6BF",
+      "score": 5.65
+    },
+    {
+      "name": "physics-v17",
+      "commit": "71ec92b8632363e4e1fc52e20bec6b4fa61169af",
+      "receipt": "BB-3CF94DAD",
+      "score": 5.31
+    },
+    {
+      "name": "focus-v20",
+      "commit": "07a9d1c3fbb513d421f2e66e23af51199f75bb4c",
+      "receipt": "BB-7F41D080",
+      "score": 5.21
+    },
+    {
+      "name": "repair-v21",
+      "commit": "7a89f26e49bbe712100a9b77de64117d52d205e3",
+      "receipt": "BB-5D14A8D0",
+      "score": 5.65
+    },
+    {
+      "name": "squad-zone-v25",
+      "commit": "c1394621617c34b15b590c5ec8ffb3cf2001ae70",
+      "receipt": "BB-76ECA895",
+      "score": 5.48
+    },
+    {
+      "name": "recovery-v26",
+      "commit": "2054a5bb27fdd36c8b8f63eebddbcf145737694e",
+      "receipt": "BB-7097A598",
+      "score": 5.85
+    }
+  ],
+  "candidate": {
+    "name": "recovery-v26",
+    "status": "scored_selected",
+    "unit_tests": 13,
+    "vm_checks": [
+      {
+        "stream": "official kit",
+        "observations": 300,
+        "missed": 0,
+        "max_ms": 15.2
+      },
+      {
+        "stream": "private replay interval",
+        "observations": 300,
+        "missed": 0,
+        "max_ms": 24.8
+      }
+    ],
+    "local_replay_check": {
+      "observations": 300,
+      "missed": 1,
+      "max_ms": 72.0
+    },
+    "direct_comparison_observations": 2792,
+    "private_ffa": {
+      "games": 1,
+      "place": 1,
+      "kills": 2,
+      "final_cubes": 5,
+      "zone_damage": 0,
+      "official_score_estimate": false
+    },
+    "score": 5.85,
+    "receipt": "BB-7097A598",
+    "commit": "2054a5bb27fdd36c8b8f63eebddbcf145737694e"
+  }
+}
