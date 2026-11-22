@@ -4,3 +4,5 @@ Based on the public MIT-licensed bot https://github.com/JishnuMadav/mech-royale 
 Reuse of public code confirmed by the user as permitted by the competition organizers.
 
 Variant jselnm: small tactical changes on top of the original (selective=True, skip mortar=True).
+
+Variant hyb1: adds seeking the last-seen hostile mech (idea from other teams' notes) on top of cand-jselnm.

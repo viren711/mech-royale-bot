@@ -138,6 +138,13 @@ class Combat:
         mechs = [m for m in obs['mechs'] if m['kind'] == 'mech']
         nearest = min((math.dist(pos, m['pos']) for m in mechs), default=1e9)
         close_count = sum(math.dist(pos, m['pos']) < 100 for m in mechs)
+        if not hasattr(self, 'seek_pos'):
+            self.seek_pos, self.seek_t = None, -999
+        for m in mechs:
+            if self.is_hostile(m, pos, now):
+                self.seek_pos, self.seek_t = list(m['pos']), now
+        if self.seek_pos and math.dist(pos[:2], self.seek_pos[:2]) < 25 and not mechs:
+            self.seek_pos = None
         self.update_recovery(hp)
         recovering = self.healing and nearest > 55
         if obs['offer']:
@@ -255,6 +262,10 @@ class Combat:
                 goal = supply['pos'][:2]
                 seeking_loot = True
                 seeking_cover = False
+        if (self.seek_pos and not urgent and not seeking_loot and not seeking_cover and target is None
+                and not self.healing and hp > .6 and now - self.seek_t < 60 and zone['next_radius'] > 30
+                and self.arena is not None):
+            goal = list(self.seek_pos[:2])
         travel_goal = goal
         if math.dist(pos[:2], goal) > 15:
             travel_goal = self.navigator.waypoint(pos, goal, now)
