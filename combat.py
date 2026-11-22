@@ -137,7 +137,7 @@ class Combat:
             if p['kind'] in by_kind or abs(p['pos'][2] - z) > 4:
                 continue
             distance = math.dist(pos, p['pos'])
-            wanted = any(w is None for w in weapons)
+            wanted = any(w is None for w in weapons) and p['kind'] != 'mortar'
             replace = None
             if not wanted and 'mortar' in by_kind and p['kind'] in ('laser', 'lightning'):
                 wanted, replace = True, by_kind['mortar'][0]
