@@ -1,0 +1,8 @@
+kit/
+sim/
+build/
+*.tar.gz
+*.exe
+*.o
+*.obj
+.git/
