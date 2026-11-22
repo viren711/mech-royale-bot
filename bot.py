@@ -1,4 +1,5 @@
 """Mech Royale bot v2: kill hunters one at a time, break line of sight to regen, hold the zone."""
+import heapq
 import json
 import math
 import os
@@ -35,6 +36,9 @@ P = {
     "wpn_threat": 0.0,   # allow weapon detours while threatened if hp is high
     "laser_hold": 0.97,  # release the laser at this fraction of full charge
     "laser_rng": 280.0,  # max distance to fire the laser
+    "nav": 0.0,          # A* ground routing around buildings (4 m grid) instead of straight lines
+    "opening": 0.0,      # first 40 s: sprint to the nearest laser/lightning pickup (radius 250 m)
+    "zlead": 25.0,       # seconds before a shrink starts at which we already stand inside the NEXT circle
     "hunt": 0.0,         # walk toward a remembered enemy when healthy and nothing else to do
     "multi_flee": 0.0,   # retreat when >=2 enemies are close and hp < 85%
     "reload_cover": 0.0, # retreat to cover to reload when ammo is low and threatened
@@ -125,6 +129,122 @@ class World:
         return False
 
 
+class Nav:
+    """4 m walkability grid (buildings inflated by the mech radius) + capped A*."""
+    CELL = 4.0
+
+    def __init__(self, world):
+        self.ox, self.oy = -513.0, -334.0
+        self.nx, self.ny = int(1070 / self.CELL) + 1, int(724 / self.CELL) + 1
+        self.blk = bytearray(self.nx * self.ny)
+        infl = 3.2
+        for (x0, y0, x1, y1, b, t, pts) in world.prisms:
+            gx = (x0 + x1) / 2; gy = (y0 + y1) / 2
+            if t - world.ground(gx, gy) < 1.5 or (b - world.ground(gx, gy) > 9.5):
+                continue
+            i0 = max(0, int((x0 - infl - self.ox) / self.CELL)); i1 = min(self.nx - 1, int((x1 + infl - self.ox) / self.CELL))
+            j0 = max(0, int((y0 - infl - self.oy) / self.CELL)); j1 = min(self.ny - 1, int((y1 + infl - self.oy) / self.CELL))
+            for j in range(j0, j1 + 1):
+                cy = self.oy + (j + 0.5) * self.CELL
+                for i in range(i0, i1 + 1):
+                    cx = self.ox + (i + 0.5) * self.CELL
+                    if self.blk[j * self.nx + i]:
+                        continue
+                    if _pip(cx, cy, pts) or _edge_dist(cx, cy, pts) < infl + self.CELL * 0.35:
+                        self.blk[j * self.nx + i] = 1
+        self.path = []
+        self.goal = None
+        self.t_plan = -99.0
+
+    def cell(self, x, y):
+        return (min(max(int((x - self.ox) / self.CELL), 0), self.nx - 1), min(max(int((y - self.oy) / self.CELL), 0), self.ny - 1))
+
+    def free(self, i, j):
+        return 0 <= i < self.nx and 0 <= j < self.ny and not self.blk[j * self.nx + i]
+
+    def snap(self, i, j):
+        if self.free(i, j):
+            return i, j
+        for r in range(1, 8):
+            for di in range(-r, r + 1):
+                for dj in range(-r, r + 1):
+                    if max(abs(di), abs(dj)) == r and self.free(i + di, j + dj):
+                        return i + di, j + dj
+        return None
+
+    def astar(self, a, b, cap=1800):
+        s = self.snap(*self.cell(*a)); g = self.snap(*self.cell(*b))
+        if s is None or g is None:
+            return None
+        if s == g:
+            return [b]
+        openq = [(0.0, 0.0, s)]
+        came = {s: None}; cost = {s: 0.0}
+        n = 0
+        bestn = (1e18, s)
+        while openq and n < cap:
+            _, c, cur = heapq.heappop(openq)
+            if c > cost.get(cur, 1e18):
+                continue
+            n += 1
+            hh = max(abs(g[0] - cur[0]), abs(g[1] - cur[1])) + 0.414 * min(abs(g[0] - cur[0]), abs(g[1] - cur[1]))
+            if hh < bestn[0]:
+                bestn = (hh, cur)
+            if cur == g:
+                break
+            ci, cj = cur
+            for di, dj in ((1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)):
+                ni, nj = ci + di, cj + dj
+                if not self.free(ni, nj):
+                    continue
+                if di and dj and not (self.free(ci + di, cj) and self.free(ci, cj + dj)):
+                    continue
+                nc = c + (1.414 if di and dj else 1.0)
+                if nc < cost.get((ni, nj), 1e18):
+                    cost[(ni, nj)] = nc; came[(ni, nj)] = cur
+                    h = max(abs(g[0] - ni), abs(g[1] - nj)) + 0.414 * min(abs(g[0] - ni), abs(g[1] - nj))
+                    heapq.heappush(openq, (nc + h, nc, (ni, nj)))
+        if g not in came:
+            g = bestn[1]          # cap hit: head for the explored cell closest to the goal
+            if g == s:
+                return None
+        pth = []; cur = g
+        while cur is not None:
+            pth.append((self.ox + (cur[0] + 0.5) * self.CELL, self.oy + (cur[1] + 0.5) * self.CELL)); cur = came[cur]
+        pth.reverse()
+        return pth
+
+    def waypoint(self, pos, goal, t):
+        """Next point to steer to (a few cells ahead on the planned path); straight line if planning fails."""
+        d = math.hypot(goal[0] - pos[0], goal[1] - pos[1])
+        if d < 14:
+            return goal
+        if (self.goal is None or math.hypot(goal[0] - self.goal[0], goal[1] - self.goal[1]) > 12 or t - self.t_plan > 2.0 or not self.path):
+            self.path = self.astar(pos, goal) or []
+            self.goal = goal; self.t_plan = t
+        if not self.path:
+            return goal
+        # drop passed points
+        while len(self.path) > 1 and math.hypot(self.path[0][0] - pos[0], self.path[0][1] - pos[1]) < 6.0:
+            self.path.pop(0)
+        k = min(3, len(self.path) - 1)
+        return self.path[k]
+
+
+def _edge_dist(x, y, pts):
+    best = 1e9
+    px, py = pts[-1]
+    for qx, qy in pts:
+        ex, ey = qx - px, qy - py
+        L2 = ex * ex + ey * ey
+        f = 0.0 if L2 < 1e-9 else max(0.0, min(1.0, ((x - px) * ex + (y - py) * ey) / L2))
+        d = math.hypot(x - (px + ex * f), y - (py + ey * f))
+        if d < best:
+            best = d
+        px, py = qx, qy
+    return best
+
+
 def _pip(x, y, pts):
     c = False
     px, py = pts[-1]
@@ -157,6 +277,12 @@ class Bot:
         self.unstick_dir = 1
         self.reach = c["loot"]["pickup_radius"]
         self.hist = {}
+        self.nav = None
+        if P["nav"]:
+            try:
+                self.nav = Nav(self.world)
+            except Exception as e:
+                log("nav build failed", e)
         self.model = None
         self.last_feat = None
         try:
@@ -187,8 +313,8 @@ class Bot:
         z = obs["zone"]
         t = obs["t"]
         # before shrink starts the current circle is safe; be inside next circle when shrink is close
-        lim = nr * 0.92 if t > z["shrink_start"] - 25 else z["radius"] * 0.92
-        cx, cy = (nx, ny) if t > z["shrink_start"] - 25 else z["center"]
+        lim = nr * 0.92 if t > z["shrink_start"] - P["zlead"] else z["radius"] * 0.92
+        cx, cy = (nx, ny) if t > z["shrink_start"] - P["zlead"] else z["center"]
         return math.hypot(x - cx, y - cy) < max(lim, 3.0)
 
     def aim_at(self, me, tgt, speed):
@@ -407,6 +533,15 @@ class Bot:
         else:
             # no visible enemy: loot, drops, or go to the zone goal
             best_l = None
+            if P["opening"] and t < 40 and slots[1] is None and not urgent:
+                for p in obs.get("pickups", []):
+                    if p["kind"] not in ("laser", "lightning"):
+                        continue
+                    dd = math.dist(p["pos"][:2], (x, y))
+                    if dd < 250 and self.safe_point(obs, p["pos"][0], p["pos"][1]):
+                        sc = dd - (40 if p["kind"] == "laser" else 0)
+                        if best_l is None or sc < best_l[0]:
+                            best_l = (sc, p["pos"])
             if P["wpn_threat"] and threatened and hpf > 0.6 and not urgent:
                 for p in obs.get("pickups", []):
                     if p["kind"] == "gun" or slots[1] is not None or not self.want_kind(p["kind"]):
@@ -446,7 +581,14 @@ class Bot:
             elif self.mode == "fight" and hpf < 0.99 and threatened:
                 pass  # hold still (silent) and regen
         if want is not None:
-            move = [want[0] - x, want[1] - y]
+            if self.nav is not None and label != "hunt":
+                try:
+                    wp = self.nav.waypoint((x, y), want, t)
+                except Exception:
+                    wp = want
+                move = [wp[0] - x, wp[1] - y]
+            else:
+                move = [want[0] - x, want[1] - y]
 
         if target is not None:
             self.last_target = target["id"]
