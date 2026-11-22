@@ -31,6 +31,10 @@ P = {
     "wpn": 1.0,          # pick up secondary weapons at all
     "wpn_r": 0.0,        # detour radius for weapon pickups (0 = loot_r)
     "no_mortar": 0.0, "no_laser": 0.0, "no_lightning": 0.0,
+    "wpn_swap": 0.0,     # swap a held non-laser weapon for a laser pickup
+    "wpn_threat": 0.0,   # allow weapon detours while threatened if hp is high
+    "laser_hold": 0.97,  # release the laser at this fraction of full charge
+    "laser_rng": 280.0,  # max distance to fire the laser
     "hunt": 0.0,         # walk toward a remembered enemy when healthy and nothing else to do
     "multi_flee": 0.0,   # retreat when >=2 enemies are close and hp < 85%
     "reload_cover": 0.0, # retreat to cover to reload when ammo is low and threatened
@@ -403,6 +407,14 @@ class Bot:
         else:
             # no visible enemy: loot, drops, or go to the zone goal
             best_l = None
+            if P["wpn_threat"] and threatened and hpf > 0.6 and not urgent:
+                for p in obs.get("pickups", []):
+                    if p["kind"] == "gun" or slots[1] is not None or not self.want_kind(p["kind"]):
+                        continue
+                    dd = math.dist(p["pos"][:2], (x, y))
+                    if dd < (P["wpn_r"] or P["loot_r"]) and abs(p["pos"][2] - z) < 6 and self.safe_point(obs, p["pos"][0], p["pos"][1]):
+                        if best_l is None or dd < best_l[0]:
+                            best_l = (dd, p["pos"])
             if not threatened:
                 for c in obs.get("cubes", []):
                     dd = math.dist(c["pos"][:2], (x, y))
@@ -475,6 +487,8 @@ class Bot:
             if math.dist(p["pos"][:2], (x, y)) <= self.reach and abs(p["pos"][2] - z) < 4:
                 if slots[1] is None:
                     act["take"] = p["id"]; break
+                if P["wpn_swap"] and p["kind"] == "laser" and slots[1] and slots[1]["kind"] != "laser":
+                    act["take"] = p["id"]; act["drop"] = 1; break
 
         # ----- aim and fire -----
         fire = [False, False]
@@ -499,8 +513,8 @@ class Bot:
                     elif k == "laser":
                         full = st.get("charge", 0.75)
                         ch = s1.get("charge", 0) or 0
-                        if tdist < st.get("range", 280):
-                            if ch < full * 0.97:
+                        if tdist < min(st.get("range", 280), P["laser_rng"]):
+                            if ch < full * P["laser_hold"]:
                                 fire[1] = s1.get("cooldown", 0) <= 0.05 or ch > 0
                             else:
                                 fire[1] = not on  # release when on target
