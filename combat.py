@@ -195,7 +195,7 @@ class Combat:
                 seeking_loot = True
             elif known_cubes and nearest > 40 and me['cubes'] < 10:
                 cube = min(known_cubes, key=lambda c: math.dist(pos, c['pos']))
-                collect_range = 140 if nearest > 80 else 80
+                collect_range = 80 if nearest > 80 else 60
                 if math.dist(pos, cube['pos']) < collect_range and abs(cube['pos'][2] - z) < 4:
                     goal = cube['pos'][:2]
                     seeking_loot = True
