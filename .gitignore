@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.env
+*.jsonl
+*.jsonl.gz
+arena/
+mechfight-kit/
+*.tar.gz
