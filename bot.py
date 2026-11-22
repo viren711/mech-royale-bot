@@ -44,6 +44,11 @@ P = {
     "burst": 0.0,        # retreat on burst damage: >240 hp lost in 1.7 s while below 74% hp
     "upg_dmg": 0.0,      # damage-first upgrade order (laser/gun damage, rate) instead of survival-first
     "boostclose": 0.0,   # boost to close distance on a visible target beyond the band
+    "selective": 0.0,    # only fight mechs that are after us (hit us / aim at us / closing / charging); never wake idle house bots
+    "iso": 0.0,          # fight from spots that see the target but are hidden from every other known mech
+    "iso_watch": 30.0,   # penalty per other mech that can see a candidate spot
+    "lethal": 0.0,       # release a partial laser charge once it already kills
+    "dropheal": 0.0,     # below 70% hp go to a landed supply drop (alone in the ring) to heal
     "hunt": 0.0,         # walk toward a remembered enemy when healthy and nothing else to do
     "multi_flee": 0.0,   # retreat when >=2 enemies are close and hp < 85%
     "reload_cover": 0.0, # retreat to cover to reload when ammo is low and threatened
@@ -283,6 +288,9 @@ class Bot:
         self.reach = c["loot"]["pickup_radius"]
         self.hist = {}
         self.dmg_log = []
+        self.attackers = {}
+        self.iso_pt = None
+        self.iso_t = -99.0
         self.nav = None
         if P["nav"]:
             try:
@@ -310,6 +318,66 @@ class Bot:
             if r < rank:
                 best, rank = i, r
         return best
+
+    def hostile(self, m, me, t):
+        """True if this mech is after us: it hit us recently, aims at us, is charging a laser, or is closing in fast."""
+        if t - self.attackers.get(m["id"], -99.0) < 10.0:
+            return True
+        x, y = me["pos"][0], me["pos"][1]
+        dx, dy = x - m["pos"][0], y - m["pos"][1]
+        d = math.hypot(dx, dy)
+        if d < 35.0 or m.get("charging"):
+            return True
+        if d < 230.0 and abs(ang_diff(m["aim"][0], math.atan2(dy, dx))) < 0.28:
+            return True
+        vx, vy = m["vel"][0], m["vel"][1]
+        if d < 170.0 and (vx * dx + vy * dy) / max(d, 1.0) > 4.0:
+            return True
+        return False
+
+    def iso_spot(self, obs, me, target, others, t):
+        """Candidate positions around us: want LOS to target, hidden from all other known mechs, near the distance band."""
+        x, y, z = me["pos"]
+        eye = me["stats"].get("eye_height", 8.0)
+        tp = target["pos"]
+        best = None
+        for rad in (0.0, 6.0, 12.0):
+            for k in range(12 if rad else 1):
+                a = k * TAU / 12
+                cx, cy = x + rad * math.cos(a), y + rad * math.sin(a)
+                if rad and not self.safe_point(obs, cx, cy):
+                    continue
+                g = self.world.ground(cx, cy)
+                if rad and self.world.inside(cx, cy, g + 1.0):
+                    continue
+                if rad and self.world.blocked((x, y, z + 2.0), (cx, cy, g + 2.0)):
+                    continue
+                sc = -0.35 * rad
+                if self.world.blocked((cx, cy, g + eye), (tp[0], tp[1], tp[2] + 4.5)):
+                    sc -= 60.0
+                for o in others:
+                    if self.world.blocked((o[0], o[1], o[2] + 8.0), (cx, cy, g + 6.0)) is False:
+                        sc -= P["iso_watch"]
+                dd = math.hypot(tp[0] - cx, tp[1] - cy)
+                if dd > P["band_max"]:
+                    sc -= (dd - P["band_max"]) * 0.4
+                elif dd < P["band_min"]:
+                    sc -= (P["band_min"] - dd) * 0.8
+                if self.iso_pt and math.hypot(cx - self.iso_pt[0], cy - self.iso_pt[1]) < 4.0:
+                    sc += 6.0
+                if best is None or sc > best[0]:
+                    best = (sc, (cx, cy))
+        return best[1] if best else None
+
+    def drop_target(self, obs, x, y, mechs):
+        for dr in obs.get("drops", []):
+            if dr.get("lands_in", 99) > 3 or math.dist(dr["pos"][:2], (x, y)) > 150:
+                continue
+            if any(math.dist(m["pos"][:2], dr["pos"][:2]) < dr.get("radius", 8) + 20 for m in mechs):
+                continue
+            if self.safe_point(obs, dr["pos"][0], dr["pos"][1]):
+                return (dr["pos"][0], dr["pos"][1])
+        return None
 
     def want_kind(self, kind):
         return bool(P["wpn"]) and not P.get("no_" + kind, 0)
@@ -394,6 +462,7 @@ class Bot:
             if e.get("type") == "damaged" and e.get("by") is not None:
                 self.last_hit_t = t
                 self.dmg_log.append((t, e.get("amount", 0.0)))
+                self.attackers[e["by"]] = t
                 self.last_hit_bearing = e.get("bearing")
                 if e["by"] not in self.threats and e.get("bearing") is not None:
                     b = e["bearing"]
@@ -474,6 +543,8 @@ class Bot:
             yaw, pitch, dxy, aimp = self.aim_at(me, m, gspeed)
             if dxy > P["fire_range"] + 40:
                 continue
+            if P["selective"] and not self.hostile(m, me, t):
+                continue
             vis = self.los(me, (m["pos"][0], m["pos"][1], m["pos"][2] + 4.5))
             score = dxy + (m.get("hp", 1400) / 15.0) + (0 if vis else 400)
             if P["stick"] and m["id"] == getattr(self, "last_target", None) and vis:
@@ -519,6 +590,8 @@ class Bot:
 
         if urgent:
             want = (gx, gy); label = "zone"
+        elif P["dropheal"] and hpf < 0.7 and self.drop_target(obs, x, y, mechs):
+            want = self.drop_target(obs, x, y, mechs); label = "dropheal"
         elif self.mode == "retreat":
             if t - self.cover_t > 1.0:
                 self.cover = self.find_cover(obs, me, threat_pos)
@@ -558,6 +631,15 @@ class Bot:
             if not self.safe_point(obs, nx_, ny_):
                 mvx += (gx - x) / max(d_goal, 1) * 1.5; mvy += (gy - y) / max(d_goal, 1) * 1.5
             move = [mvx, mvy]
+            if P["iso"] and tvis and tdist <= bmax + 20:
+                if t - self.iso_t > 0.3:
+                    others = [p for i, p in ((k, v[0]) for k, v in self.threats.items()) if i != target["id"] and math.dist(p[:2], (x, y)) < 220]
+                    self.iso_pt = self.iso_spot(obs, me, target, others, t)
+                    self.iso_t = t
+                if self.iso_pt and math.hypot(self.iso_pt[0] - x, self.iso_pt[1] - y) > 2.5:
+                    move = [(self.iso_pt[0] - x) * 1.0 + mvx * 2.0, (self.iso_pt[1] - y) * 1.0 + mvy * 2.0]
+                    if tdist < bmin:
+                        move = [move[0] - ux * 6.0, move[1] - uy * 6.0]
         elif farm is not None and farm[3] > 35:
             want = (farm[0]["pos"][0], farm[0]["pos"][1]); label = "farm"
         else:
@@ -686,7 +768,10 @@ class Bot:
                         full = st.get("charge", 0.75)
                         ch = s1.get("charge", 0) or 0
                         if tdist < min(st.get("range", 280), P["laser_rng"]):
-                            if ch < full * P["laser_hold"]:
+                            dmg_now = st.get("damage", 315.0) * (st.get("min_frac", 0.35) + (1 - st.get("min_frac", 0.35)) * min(1.0, ch / max(full, 0.01)))
+                            if P["lethal"] and ch >= st.get("min_charge", 0.15) and on and dmg_now >= 1.15 * target.get("hp", 1400):
+                                fire[1] = False
+                            elif ch < full * P["laser_hold"]:
                                 fire[1] = s1.get("cooldown", 0) <= 0.05 or ch > 0
                             else:
                                 fire[1] = not on  # release when on target
