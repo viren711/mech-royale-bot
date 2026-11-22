@@ -36,7 +36,7 @@ class Combat:
         if hp >= .60:
             self.healing = False
             self.cover_goal = None
-        elif hp < .25:
+        elif hp < .30:
             self.healing = True
 
     def aim_at(self, me, target, kind, weapon):
