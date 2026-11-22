@@ -39,6 +39,11 @@ P = {
     "nav": 0.0,          # A* ground routing around buildings (4 m grid) instead of straight lines
     "opening": 0.0,      # first 40 s: sprint to the nearest laser/lightning pickup (radius 250 m)
     "zlead": 25.0,       # seconds before a shrink starts at which we already stand inside the NEXT circle
+    "bandw": 0.0,        # distance band depends on loadout: lightning close, laser ~55-100 m
+    "finish": 0.0,       # keep fighting a weak enemy (hp <= min(280, 0.52*my hp)) instead of retreating
+    "burst": 0.0,        # retreat on burst damage: >240 hp lost in 1.7 s while below 74% hp
+    "upg_dmg": 0.0,      # damage-first upgrade order (laser/gun damage, rate) instead of survival-first
+    "boostclose": 0.0,   # boost to close distance on a visible target beyond the band
     "hunt": 0.0,         # walk toward a remembered enemy when healthy and nothing else to do
     "multi_flee": 0.0,   # retreat when >=2 enemies are close and hp < 85%
     "reload_cover": 0.0, # retreat to cover to reload when ammo is low and threatened
@@ -277,6 +282,7 @@ class Bot:
         self.unstick_dir = 1
         self.reach = c["loot"]["pickup_radius"]
         self.hist = {}
+        self.dmg_log = []
         self.nav = None
         if P["nav"]:
             try:
@@ -293,6 +299,10 @@ class Bot:
     # ---------- helpers ----------
     def upgrade_pick(self, offer):
         pref = (["plating", "armor"] + UPG_PREF[2:]) if P["plating"] else UPG_PREF
+        if P["upg_dmg"]:
+            pref = ["laser_damage", "gun_damage", "gun_rate", "lightning_efficiency", "laser_charge", "plating", "nanites",
+                    "armor", "lightning_range", "gyros", "gun_velocity", "gun_mag", "lightning_chain", "sensors", "capacitor",
+                    "reactor", "servos", "jets", "mortar_reload", "mortar_velocity", "mortar_splash", "laser_pierce"]
         best, rank = 0, 999
         for i, ch in enumerate(offer.get("choices", [])):
             cid = ch.get("id", "")
@@ -383,6 +393,7 @@ class Bot:
         for e in obs.get("events", []):
             if e.get("type") == "damaged" and e.get("by") is not None:
                 self.last_hit_t = t
+                self.dmg_log.append((t, e.get("amount", 0.0)))
                 self.last_hit_bearing = e.get("bearing")
                 if e["by"] not in self.threats and e.get("bearing") is not None:
                     b = e["bearing"]
@@ -433,11 +444,20 @@ class Bot:
             if self.mode == "fight" and ml_danger:
                 self.mode = "retreat"; self.cover_t = -99
         elif self.mode == "fight" and hpf < P["low_hp"] and threatened:
-            self.mode = "retreat"; self.cover_t = -99
+            fin = False
+            if P["finish"] and mechs:
+                nm = min(mechs, key=lambda m: math.dist(m["pos"], me["pos"]))
+                fin = math.dist(nm["pos"][:2], (x, y)) < 120 and nm.get("hp", 1400) <= min(280.0, me["hp"] * 0.52)
+            if not fin:
+                self.mode = "retreat"; self.cover_t = -99
         elif self.mode == "retreat" and (hpf >= P["high_hp"] or not threat_pos):
             self.mode = "fight"
         if P["multi_flee"] and self.mode == "fight" and hpf < 0.85:
             if sum(1 for p in threat_pos if math.dist(p[:2], (x, y)) < 150) >= 2:
+                self.mode = "retreat"; self.cover_t = -99
+        if P["burst"] and self.mode == "fight":
+            self.dmg_log = [d for d in self.dmg_log if t - d[0] < 1.7]
+            if sum(d[1] for d in self.dmg_log) > 240 and hpf < 0.74:
                 self.mode = "retreat"; self.cover_t = -99
         _g = me["weapons"][0]
         if P["reload_cover"] and self.mode == "fight" and threatened and _g and _g.get("ammo", 12) <= 3:
@@ -494,6 +514,7 @@ class Bot:
         urgent = (not me["in_zone"]) or not in_safe
         move = [0.0, 0.0]
         want = None
+        boost_close = False
         label = self.mode
 
         if urgent:
@@ -520,9 +541,18 @@ class Bot:
                 self.strafe = -self.strafe
                 self.strafe_t = t + self.rng.uniform(1.2, 2.8)
             mvx, mvy = -uy * self.strafe * 0.8, ux * self.strafe * 0.8
-            if tdist > P["band_max"] or not tvis:
+            bmin, bmax = P["band_min"], P["band_max"]
+            if P["bandw"]:
+                kinds_ = {w["kind"] for w in slots if w}
+                if "lightning" in kinds_:
+                    bmin, bmax = 15.0, 45.0
+                elif "laser" in kinds_:
+                    bmin, bmax = 55.0, 100.0
+            if tdist > bmax or not tvis:
                 mvx += ux; mvy += uy
-            elif tdist < P["band_min"]:
+                if P["boostclose"] and tvis and tdist > bmax + 15 and me["energy"] > 40:
+                    boost_close = True
+            elif tdist < bmin:
                 mvx -= ux * 0.7; mvy -= uy * 0.7
             nx_, ny_ = x + mvx * 10, y + mvy * 10
             if not self.safe_point(obs, nx_, ny_):
@@ -730,6 +760,8 @@ class Bot:
             boost = me["energy"] > 5
         if urgent or self.mode == "retreat":
             boost = boost or me["energy"] > 25
+        if boost_close:
+            boost = True
         act["move"] = move
         act["boost"] = boost
         if aim:
